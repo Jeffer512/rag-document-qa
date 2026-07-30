@@ -5,7 +5,7 @@ from pathlib import Path
 import streamlit as st
 
 from src.config import DATA_DIR
-from src.generator import generate_response
+from src.generator import generate_stream
 from src.ingestion import load_and_chunk
 from src.vector_store import clear_index, get_indexed_sources, index_documents, remove_source
 
@@ -19,7 +19,7 @@ def _init_session():
     if "sources" not in st.session_state:
         st.session_state.sources = get_indexed_sources()
         
-
+@st.fragment
 def _index_pdf(raw_bytes: bytes, name:str, file_hash:str):
     with st.spinner(f"Indexing {name}..."):
         chunks = load_and_chunk(BytesIO(raw_bytes), name, file_hash)
@@ -27,7 +27,7 @@ def _index_pdf(raw_bytes: bytes, name:str, file_hash:str):
     total_pages = chunks[0]["metadata"]["total_pages"] if chunks else 0
     st.session_state.sources[file_hash] = {"source": name, "total_pages": total_pages}
 
-
+@st.fragment
 def render_app():
     st.header("Upload a PDF")
     uploaded = st.file_uploader("Choose a PDF", type="pdf")
@@ -63,19 +63,15 @@ def render_chat():
             return
 
         with st.chat_message("assistant"):
-            with st.spinner("Thinking..."):
-                try:
-                    result = generate_response(question)
-                except Exception as e:      # noqa: BLE001
-                    st.error(f"Generation failed: {e}") 
-                    st.stop()
-            st.markdown(result["answer"])
-            if result["sources"]:
+            with st.spinner("Retrieving context..."):
+                token_stream, sources = generate_stream(question)
+            answer = st.write_stream(token_stream)
+            if sources:
                 with st.expander("Sources"):
-                    for s in result["sources"]:
+                    for s in sources:
                         st.write(f"- Page {s['page']} of **{s['source']}**")
         st.session_state.messages.append({"content": question, "role": "user"})
-        st.session_state.messages.append({"role": "assistant", "content": result["answer"], "sources": result["sources"]})
+        st.session_state.messages.append({"role": "assistant", "content": answer, "sources": sources})
 
 
 def render_sidebar():
