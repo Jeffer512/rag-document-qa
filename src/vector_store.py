@@ -73,8 +73,8 @@ def get_indexed_sources() -> dict[str, dict]:
                 if key not in seen_keys:
                     seen_keys.add(key)
                     result[key] = {
-                        "total_pages": meta.get("total_pages", 0),
                         "source": meta.get("source", ""),
+                        "total_pages": meta.get("total_pages", 0),
                     }
     return result
 

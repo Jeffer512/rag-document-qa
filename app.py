@@ -7,7 +7,7 @@ import streamlit as st
 from src.config import DATA_DIR
 from src.generator import generate_response
 from src.ingestion import load_and_chunk
-from src.vector_store import get_indexed_sources, index_documents
+from src.vector_store import clear_index, get_indexed_sources, index_documents, remove_source
 
 st.set_page_config(page_title="Document Q&A", page_icon="📄")
 st.title("Document Q&A - RAG Pipeline")
@@ -37,7 +37,8 @@ def render_app():
         uploaded.seek(0)
 
         if file_hash not in st.session_state.sources:
-            save_path: Path = DATA_DIR / uploaded.name
+            file_path = Path(uploaded.name)
+            save_path: Path = DATA_DIR / f"{file_path.stem}_{file_hash}{file_path.suffix}"
             DATA_DIR.mkdir(parents=True, exist_ok=True)
             save_path.write_bytes(raw_bytes)
             _index_pdf(raw_bytes, uploaded.name, file_hash)
@@ -77,10 +78,39 @@ def render_chat():
         st.session_state.messages.append({"role": "assistant", "content": result["answer"], "sources": result["sources"]})
 
 
+def render_sidebar():
+    st.sidebar.markdown("### Indexed Documents")
+    if not st.session_state.sources:
+        st.sidebar.caption("No documents indexed.")
+        return
+
+    for file_hash, info in sorted(st.session_state.sources.items(), key=lambda x: x[1]["source"]):
+        col1, col2, col3 = st.sidebar.columns([3, 1, 1])
+        col1.write(info["source"])
+        col2.write(f"{info['total_pages']}p")
+        if col3.button("❌", key=f"rm_{file_hash}"):
+            remove_source(file_hash)
+            file_path = Path(info["source"])
+            pdf_path = DATA_DIR / f"{file_path.stem}_{file_hash}{file_path.suffix}"
+            pdf_path.unlink(missing_ok=True)
+            st.session_state.sources.pop(file_hash, None)
+            st.rerun()
+
+    st.sidebar.divider()
+    if st.sidebar.button("Remove all"):
+        clear_index()
+        for f in DATA_DIR.iterdir():
+            if f.is_file():
+                f.unlink()
+        st.session_state.sources.clear()
+        st.rerun()
+
+
 def main():
     _init_session()
     render_app()
     render_chat()
+    render_sidebar()
 
 
 if __name__ == "__main__":
