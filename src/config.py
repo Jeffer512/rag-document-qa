@@ -17,3 +17,4 @@ RETRIEVAL_K: int = 5
 # Persistence directories (auto-created on first run)
 CHROMA_DIR: Path = PROJECT_ROOT / "chroma_db/"
 DATA_DIR: Path = PROJECT_ROOT / "data/"
+CONVERSATIONS_DIR: Path = PROJECT_ROOT / "conversations/"

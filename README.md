@@ -12,6 +12,7 @@ Upload PDF documents, ask questions in natural language, and get answers generat
 
 - Local LLM via Ollama (no internet required after setup)
 - Streaming responses — text appears token by token
+- Conversation persistence — multiple named chats saved to disk, restored on restart
 - Hash-based deduplication — same content never re-indexed
 - File management via sidebar — per-document removal with disk cleanup
 - Self-contained tests — all mocks, no Ollama needed for `pytest`
@@ -62,6 +63,7 @@ Open `http://localhost:8501` in your browser.
 2. **Ask a question** — type in the chat input and press Enter
 3. **View sources** — expand the "Sources" section under each answer to see which document and page the answer came from
 4. **Manage documents** — use the sidebar to view indexed documents, remove individual files, or clear everything
+5. **Manage conversations** — the sidebar lets you create, rename, delete, and switch between named conversations; chats persist across app restarts
 
 ## Project structure
 
@@ -71,14 +73,17 @@ rag-document-qa/
 ├── pyproject.toml         # Project config and dependencies
 ├── src/
 │   ├── config.py          # Configuration constants
+│   ├── conversation.py    # Conversation persistence (JSON files)
 │   ├── ingestion.py       # PDF parsing and text chunking
 │   ├── vector_store.py    # ChromaDB index and retrieval
 │   └── generator.py       # Ollama LLM integration (streaming + sync)
 ├── tests/
+│   ├── test_conversation.py  # Conversation CRUD
 │   ├── test_ingestion.py  # PDF loading, chunking, hashing
 │   ├── test_vector_store.py  # Index, retrieve, source management
 │   └── test_generator.py  # Formatting, source extraction, streaming
 ├── chroma_db/             # Vector store persistence (auto-created)
+├── conversations/         # Conversation history (auto-created)
 └── data/                  # Uploaded PDFs (auto-created)
 ```
 
@@ -136,3 +141,4 @@ All settings in `src/config.py`:
 | `RETRIEVAL_K` | `5` | Top-k chunks retrieved per query |
 | `CHROMA_DIR` | `chroma_db/` | Vector store persistence directory |
 | `DATA_DIR` | `data/` | Uploaded file storage directory |
+| `CONVERSATIONS_DIR` | `conversations/` | Conversation history storage directory |
