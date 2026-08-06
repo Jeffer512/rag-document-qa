@@ -68,6 +68,7 @@ def _open_conversation(conversation_id: str):
     st.session_state.active_conversation = conversation_id
     st.session_state.rename_target = None
     st.session_state.regenerate_index = None
+    st.session_state.chat_input = ""
 
 
 def _new_conversation():
@@ -76,12 +77,14 @@ def _new_conversation():
     st.session_state.active_conversation = conversation_id
     st.session_state.rename_target = None
     st.session_state.regenerate_index = None
+    st.session_state.chat_input = ""
 
 
 def _start_rename(conversation_id: str):
     st.session_state.rename_target = conversation_id
     st.session_state.rename_input = _get_conversation(conversation_id)["title"]
     st.session_state.active_conversation = conversation_id
+    st.session_state.chat_input = ""
 
 
 def _save_rename():
@@ -107,6 +110,7 @@ def _delete_conversation(conversation_id: str):
             st.session_state.active_conversation = remaining[0]["conversation_id"]
         else:
             _new_conversation()
+        st.session_state.chat_input = ""
 
 
 def _pdf_save_path(name: str, file_hash: str) -> Path:
@@ -164,7 +168,7 @@ def _request_regenerate(index: int):
     st.session_state.regenerate_index = index
 
 
-def _stream_answer(question: str, history: list[dict] | None = None) -> tuple[str, list[dict]]:
+def _stream_answer(question: str, history: list[dict] | None, index: int) -> tuple[str, list[dict]]:
     with st.spinner("Retrieving context..."):
         token_stream, sources = generate_stream(question, history)
 
@@ -186,6 +190,7 @@ def _stream_answer(question: str, history: list[dict] | None = None) -> tuple[st
             with st.expander("Sources"):
                 for s in sources:
                     st.write(f"- Page {s['page']} of **{s['source']}**")
+        _render_actions(index)
     return answer, sources
 
 
@@ -194,8 +199,9 @@ def _generate_answer(question: str, target_index: int | None):
     messages = conversation["messages"]
     start = (target_index - 1) if target_index is not None else (len(messages) - 1)
     history = messages[:start]
+    assistant_index = target_index if target_index is not None else len(messages)
     try:
-        answer, sources = _stream_answer(question, history)
+        answer, sources = _stream_answer(question, history, assistant_index)
     except PartialStreamError as e:
         st.error(f"Answer was interrupted: {e.cause}")
         content, srcs, error = e.partial, e.sources, f"Answer was interrupted: {e.cause}"
@@ -215,11 +221,46 @@ def _generate_answer(question: str, target_index: int | None):
     save_conversation(st.session_state.active_conversation, conversation["title"], messages)
 
 
+def _rollback(index: int):
+    conversation = _active()
+    if conversation["messages"][index]["role"] == "user":
+        st.session_state.chat_input = conversation["messages"][index]["content"]
+        conversation["messages"] = conversation["messages"][:index]
+    else:
+        conversation["messages"] = conversation["messages"][:index+1]
+    st.session_state.regenerate_index = None
+    save_conversation(st.session_state.active_conversation, conversation["title"], conversation["messages"])
+
+
+def _fork(index: int):
+    current = _active()
+    _new_conversation()
+    new = _active()
+    if current["messages"][index]["role"] == "user":
+        new["messages"] = current["messages"][:index]
+        st.session_state.chat_input = current["messages"][index]["content"]
+    else:
+        new["messages"] = current["messages"][:index+1]
+    new_title = f"Branch of {current['title']}"
+    new["title"] = new_title
+    save_conversation(st.session_state.active_conversation, new_title, new["messages"])
+
+
+def _render_actions(index: int):
+    conversation_id = st.session_state.active_conversation
+    with st.container(horizontal=True, border=False):
+        st.button("Rollback", icon=":material/undo:", type="tertiary",
+                key=f"rollback_{conversation_id}_{index}", on_click=_rollback, args=(index,),
+                help="Remove this message and everything after it")
+        st.button("Fork", icon=":material/call_split:", type="tertiary",
+                key=f"fork_{conversation_id}_{index}", on_click=_fork, args=(index,),
+                help="Start a new conversation from this point")
+
+
 def render_chat():
     conversation = _active()
     messages = conversation["messages"]
     regenerate_index = st.session_state.regenerate_index
-
     for i, msg in enumerate(messages):
         if i == regenerate_index and msg["role"] == "assistant":
             continue
@@ -232,13 +273,17 @@ def render_chat():
                         st.write(f"- Page {s['page']} of **{s['source']}**")
             if msg.get("error"):
                 st.error(msg["error"])
+            _render_actions(i)
 
-    if question := st.chat_input("Ask a question about your documents..."):
+    if question := st.chat_input("Ask a question about your documents...", key="chat_input"):
         st.session_state.regenerate_index = None
         if not messages:
             conversation["title"] = question.strip().splitlines()[0][:50] or "Untitled"
+        user_index = len(messages)
         with st.chat_message("user"):
             st.markdown(question)
+            if st.session_state.sources:
+                _render_actions(user_index)
         if not st.session_state.sources:
             st.warning("No documents indexed yet.")
             return
@@ -353,9 +398,9 @@ def render_sidebar():
 def main():
     title_container = st.empty()
     _init_session()
+    render_sidebar()
     render_upload()
     render_chat()
-    render_sidebar()
     conversation = _active()
     with title_container:    
         st.title("New conversation" if not conversation["messages"] else conversation["title"])
