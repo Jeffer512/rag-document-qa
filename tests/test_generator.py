@@ -1,4 +1,7 @@
+import json
 from unittest.mock import Mock
+
+import pytest
 
 from src.generator import _extract_sources, _format_context, generate_stream
 
@@ -69,11 +72,8 @@ def test_generate_stream_connection_error(monkeypatch):
 
     monkeypatch.setattr("src.generator.requests.post", _raise)
 
-    tokens, _sources = generate_stream("test")
-    result = "".join(tokens)
-    assert _sources == []
-    assert "❌" in result
-    assert "No server" in result
+    with pytest.raises(ConnectionError):
+        generate_stream("test")
 
 
 def test_generate_stream_mid_stream_error(monkeypatch):
@@ -89,6 +89,6 @@ def test_generate_stream_mid_stream_error(monkeypatch):
     monkeypatch.setattr("src.generator.requests.post", lambda *a, **kw: mock_resp)
 
     tokens, _sources = generate_stream("test")
-    result = "".join(tokens)
-    assert "Partial" in result
-    assert "❌" in result
+    assert next(tokens) == "Partial "
+    with pytest.raises(json.JSONDecodeError):
+        next(tokens)

@@ -60,44 +60,34 @@ def generate_response(question: str) -> dict:
     return {"answer": answer, "sources": sources}
 
 
-def _error_stream(message: str) -> Iterator[str]:
-    yield f"❌ {message}"
-
-
 def generate_stream(question: str) -> tuple[Iterator[str], list[dict]]:
     documents = retrieve_context(question)
     context = _format_context(documents)
     sources = _extract_sources(documents)
     user_prompt = f"CONTEXT:\n{context}\n\nQUESTION:\n{question}"
 
-    try:
-        res = requests.post(
-            f"{OLLAMA_BASE_URL}/api/chat",
-            json={
-                "model": LLM_MODEL,
-                "messages": [
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": user_prompt},
-                ],
-                "stream": True,
-                "options": {"temperature": 0.0},
-            },
-            stream=True,
-            timeout=(5, 30),
-        )
-        res.raise_for_status()
-    except requests.exceptions.RequestException as e:
-        return _error_stream(f"Connection failed: {e}"), []
+    res = requests.post(
+        f"{OLLAMA_BASE_URL}/api/chat",
+        json={
+            "model": LLM_MODEL,
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ],
+            "stream": True,
+            "options": {"temperature": 0.0},
+        },
+        stream=True,
+        timeout=(5, 30),
+    )
+    res.raise_for_status()
 
     def _tokens() -> Iterator[str]:
-        try:
-            for line in res.iter_lines(decode_unicode=True):
-                if line:
-                    data = json.loads(line)
-                    content = data.get("message", {}).get("content", "")
-                    if content:
-                        yield content
-        except Exception as e:  # noqa: BLE001
-            yield f"\n\n❌ Error: {e}"
+        for line in res.iter_lines(decode_unicode=True):
+            if line:
+                data = json.loads(line)
+                content = data.get("message", {}).get("content", "")
+                if content:
+                    yield content
 
     return _tokens(), sources

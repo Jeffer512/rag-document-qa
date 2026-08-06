@@ -1,4 +1,5 @@
 import hashlib
+from collections.abc import Iterator
 from io import BytesIO
 from pathlib import Path
 from uuid import uuid4
@@ -20,11 +21,20 @@ from src.vector_store import clear_index, get_indexed_sources, index_documents, 
 st.set_page_config(page_title="Document Q&A", page_icon="📄")
 
 
+class PartialStreamError(Exception):
+    def __init__(self, partial: str, sources: list[dict], cause: Exception):
+        super().__init__(f"Stream interrupted after partial output: {cause}")
+        self.partial = partial
+        self.sources = sources
+        self.cause = cause
+
+
 def _init_session():
     st.session_state.setdefault("sources", get_indexed_sources())
     st.session_state.setdefault("conversations", {})
     st.session_state.setdefault("active_conversation", None)
     st.session_state.setdefault("rename_target", None)
+    st.session_state.setdefault("regenerate_index", None)
     if not st.session_state.conversations:
         conversations = list_conversations()
         for conversation in conversations:
@@ -52,6 +62,7 @@ def _active() -> dict:
 def _open_conversation(conversation_id: str):
     st.session_state.active_conversation = conversation_id
     st.session_state.rename_target = None
+    st.session_state.regenerate_index = None
 
 
 def _new_conversation():
@@ -59,6 +70,7 @@ def _new_conversation():
     st.session_state.conversations[conversation_id] = {"title": "Untitled"}
     st.session_state.active_conversation = conversation_id
     st.session_state.rename_target = None
+    st.session_state.regenerate_index = None
 
 
 def _start_rename(conversation_id: str):
@@ -134,42 +146,100 @@ def render_upload():
             _index_pdf(raw_bytes, uploaded.name, file_hash)
 
 
+def _request_regenerate(index: int):
+    st.session_state.regenerate_index = index
+
+
+def _stream_answer(question: str) -> tuple[str, list[dict]]:
+    with st.spinner("Retrieving context..."):
+        token_stream, sources = generate_stream(question)
+
+    with st.chat_message("assistant"):
+        collected: list[str] = []
+
+        def _tee() -> Iterator[str]:
+            for token in token_stream:
+                collected.append(token)
+                yield token
+
+        try:
+            answer = st.write_stream(_tee())
+        except Exception as e:
+            if collected:
+                raise PartialStreamError("".join(collected), sources, e) from None
+            raise
+        if sources:
+            with st.expander("Sources"):
+                for s in sources:
+                    st.write(f"- Page {s['page']} of **{s['source']}**")
+    return answer, sources
+
+
+def _generate_answer(question: str, target_index: int | None):
+    conversation = _active()
+    messages = conversation["messages"]
+    try:
+        answer, sources = _stream_answer(question)
+    except PartialStreamError as e:
+        st.error(f"Answer was interrupted: {e.cause}")
+        content, srcs, error = e.partial, e.sources, f"Answer was interrupted: {e.cause}"
+    except Exception as e:  # noqa: BLE001
+        st.error(f"An internal error has occurred: {e}")
+        content, srcs, error = "", [], f"An internal error has occurred: {e}"
+    else:
+        content, srcs, error = answer, sources, None
+
+    assistant_msg = {"role": "assistant", "content": content, "sources": srcs}
+    if error:
+        assistant_msg["error"] = error
+    if target_index is None:
+        messages.append(assistant_msg)
+    else:
+        messages[target_index] = assistant_msg
+    save_conversation(st.session_state.active_conversation, conversation["title"], messages)
+
+
 def render_chat():
     conversation = _active()
-    for msg in conversation["messages"]:
+    messages = conversation["messages"]
+    regenerate_index = st.session_state.regenerate_index
+
+    for i, msg in enumerate(messages):
+        if i == regenerate_index and msg["role"] == "assistant":
+            continue
         with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
+            if msg["content"]:
+                st.markdown(msg["content"])
             if "sources" in msg:
                 with st.expander("Sources"):
                     for s in msg["sources"]:
                         st.write(f"- Page {s['page']} of **{s['source']}**")
+            if msg.get("error"):
+                st.error(msg["error"])
 
     if question := st.chat_input("Ask a question about your documents..."):
-        if not conversation["messages"]:
+        st.session_state.regenerate_index = None
+        if not messages:
             conversation["title"] = question.strip().splitlines()[0][:50] or "Untitled"
-
         with st.chat_message("user"):
             st.markdown(question)
-
         if not st.session_state.sources:
             st.warning("No documents indexed yet.")
             return
+        messages.append({"content": question, "role": "user"})
+        _generate_answer(question, None)
+    elif regenerate_index is not None:
+        st.session_state.regenerate_index = None
+        if 0 < regenerate_index < len(messages):
+            _generate_answer(messages[regenerate_index - 1]["content"], regenerate_index)
 
-        with st.chat_message("assistant"):
-            with st.spinner("Retrieving context..."):
-                token_stream, sources = generate_stream(question)
-            answer = st.write_stream(token_stream)
-            if sources:
-                with st.expander("Sources"):
-                    for s in sources:
-                        st.write(f"- Page {s['page']} of **{s['source']}**")
-
-        conversation["messages"].append({"content": question, "role": "user"})
-        conversation["messages"].append({"role": "assistant", "content": answer, "sources": sources})
-        save_conversation(
-            st.session_state.active_conversation,
-            conversation["title"],
-            conversation["messages"],
+    if messages and messages[-1]["role"] == "assistant":
+        st.button(
+            "Regenerate",
+            icon=":material/refresh:",
+            key="regenerate_last",
+            on_click=_request_regenerate,
+            args=(len(messages) - 1,),
         )
 
 
