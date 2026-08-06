@@ -2,6 +2,7 @@ import hashlib
 from collections.abc import Iterator
 from io import BytesIO
 from pathlib import Path
+from typing import cast
 from uuid import uuid4
 
 import streamlit as st
@@ -175,7 +176,7 @@ def _stream_answer(question: str) -> tuple[str, list[dict]]:
                 yield token
 
         try:
-            answer = st.write_stream(_tee())
+            answer = cast(str, st.write_stream(_tee()))
         except Exception as e:
             if collected:
                 raise PartialStreamError("".join(collected), sources, e) from None
