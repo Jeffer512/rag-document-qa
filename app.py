@@ -139,24 +139,25 @@ def _index_pdf(raw_bytes: bytes, name: str, file_hash: str):
 
 def render_upload():
     st.header("Upload a PDF")
-    uploaded = st.file_uploader("Choose a PDF", type="pdf")
+    uploaded = st.file_uploader("Choose a PDF", type="pdf", accept_multiple_files=True)
     if uploaded:
-        raw_bytes = uploaded.read()
-        file_hash = hashlib.sha256(raw_bytes).hexdigest()[:16]
-        uploaded.seek(0)
+        for file in uploaded:
+            raw_bytes = file.read()
+            file_hash = hashlib.sha256(raw_bytes).hexdigest()[:16]
+            file.seek(0)
 
-        if file_hash not in st.session_state.sources:
-            save_path = _pdf_save_path(uploaded.name, file_hash)
-            DATA_DIR.mkdir(parents=True, exist_ok=True)
-            try:
-                save_path.write_bytes(raw_bytes)
-                _index_pdf(raw_bytes, uploaded.name, file_hash)
-            except NoTextError as e:
-                save_path.unlink(missing_ok=True)
-                st.error(f"No extractable text found in {e}; it won't be searchable.")
-            except Exception as e:  # noqa: BLE001
-                save_path.unlink(missing_ok=True)
-                st.error(f"Failed to index {uploaded.name}: {e}")
+            if file_hash not in st.session_state.sources:
+                save_path = _pdf_save_path(file.name, file_hash)
+                DATA_DIR.mkdir(parents=True, exist_ok=True)
+                try:
+                    save_path.write_bytes(raw_bytes)
+                    _index_pdf(raw_bytes, file.name, file_hash)
+                except NoTextError as e:
+                    save_path.unlink(missing_ok=True)
+                    st.error(f"No extractable text found in {e}; it won't be searchable.")
+                except Exception as e:  # noqa: BLE001
+                    save_path.unlink(missing_ok=True)
+                    st.error(f"Failed to index {file.name}: {e}")
 
 
 def _request_regenerate(index: int):
