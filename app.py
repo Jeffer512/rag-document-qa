@@ -29,6 +29,10 @@ class PartialStreamError(Exception):
         self.cause = cause
 
 
+class NoTextError(Exception):
+    pass
+
+
 def _init_session():
     st.session_state.setdefault("sources", get_indexed_sources())
     st.session_state.setdefault("conversations", {})
@@ -126,9 +130,10 @@ def _remove_all_documents():
 def _index_pdf(raw_bytes: bytes, name: str, file_hash: str):
     with st.spinner(f"Indexing {name}..."):
         chunks = load_and_chunk(BytesIO(raw_bytes), name, file_hash)
+        if not chunks:
+            raise NoTextError(name)
         index_documents(chunks)
-    total_pages = chunks[0]["metadata"]["total_pages"] if chunks else 0
-    st.session_state.sources[file_hash] = {"source": name, "total_pages": total_pages}
+    st.session_state.sources[file_hash] = {"source": name, "total_pages": chunks[0]["metadata"]["total_pages"]}
 
 
 def render_upload():
@@ -142,8 +147,15 @@ def render_upload():
         if file_hash not in st.session_state.sources:
             save_path = _pdf_save_path(uploaded.name, file_hash)
             DATA_DIR.mkdir(parents=True, exist_ok=True)
-            save_path.write_bytes(raw_bytes)
-            _index_pdf(raw_bytes, uploaded.name, file_hash)
+            try:
+                save_path.write_bytes(raw_bytes)
+                _index_pdf(raw_bytes, uploaded.name, file_hash)
+            except NoTextError as e:
+                save_path.unlink(missing_ok=True)
+                st.error(f"No extractable text found in {e}; it won't be searchable.")
+            except Exception as e:  # noqa: BLE001
+                save_path.unlink(missing_ok=True)
+                st.error(f"Failed to index {uploaded.name}: {e}")
 
 
 def _request_regenerate(index: int):
