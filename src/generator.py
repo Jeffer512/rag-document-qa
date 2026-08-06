@@ -13,6 +13,14 @@ SYSTEM_PROMPT = (
     '"I do not have enough information in the uploaded documents."'
 )
 
+REWRITE_SYSTEM_PROMPT = (
+    "You are a query rewriter for a document retrieval system. Rewrite the "
+    "user's latest question into a standalone search query that captures its "
+    "full intent, resolving pronouns and implicit references using the "
+    "conversation history. If the question is already self-contained, return "
+    "it unchanged. Output only the rewritten query."
+)
+
 
 def _format_context(documents: list[dict]) -> str:
     blocks = []
@@ -47,10 +55,30 @@ def _prior_messages(history: list[dict]) -> list[dict]:
     return prior
 
 
+def rewrite_query(question: str, history: list[dict]) -> str:
+    res = requests.post(
+        f"{OLLAMA_BASE_URL}/api/chat",
+        json={
+            "model": LLM_MODEL,
+            "messages": [
+                {"role": "system", "content": REWRITE_SYSTEM_PROMPT},
+                *_prior_messages(history),
+                {"role": "user", "content": question},
+            ],
+            "stream": False,
+            "options": {"temperature": 0.0},
+        },
+        timeout=(5, 30),
+    )
+    res.raise_for_status()
+    return res.json()["message"]["content"].strip() or question
+
+
 def generate_stream(
     question: str, history: list[dict] | None = None
 ) -> tuple[Iterator[str], list[dict]]:
-    documents = retrieve_context(question)
+    query = rewrite_query(question, history) if history else question
+    documents = retrieve_context(query)
     context = _format_context(documents)
     sources = _extract_sources(documents)
     user_prompt = f"CONTEXT:\n{context}\n\nQUESTION:\n{question}"

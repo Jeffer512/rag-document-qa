@@ -3,7 +3,13 @@ from unittest.mock import Mock
 
 import pytest
 
-from src.generator import _extract_sources, _format_context, _prior_messages, generate_stream
+from src.generator import (
+    _extract_sources,
+    _format_context,
+    _prior_messages,
+    generate_stream,
+    rewrite_query,
+)
 
 
 def test_format_context():
@@ -108,7 +114,16 @@ def test_prior_messages_drops_failed_turn():
 
 
 def test_generate_stream_payload(monkeypatch):
-    monkeypatch.setattr("src.generator.retrieve_context", _mock_retrieve)
+    retrieved = []
+
+    def _capture_retrieve(question, k=None):
+        retrieved.append(question)
+        return _SAMPLE_DOCS
+
+    monkeypatch.setattr("src.generator.retrieve_context", _capture_retrieve)
+    monkeypatch.setattr(
+        "src.generator.rewrite_query", lambda question, history: "standalone query"
+    )
 
     mock_resp = Mock()
     mock_resp.iter_lines.return_value = ['{"done":true,"message":{"content":""}}']
@@ -131,6 +146,7 @@ def test_generate_stream_payload(monkeypatch):
     tokens, _sources = generate_stream("Second?", history)
     list(tokens)
 
+    assert retrieved == ["standalone query"]
     messages = captured["json"]["messages"]
     assert messages[0]["role"] == "system"
     assert messages[1] == {"role": "user", "content": "First?"}
@@ -138,3 +154,41 @@ def test_generate_stream_payload(monkeypatch):
     assert messages[3]["role"] == "user"
     assert "QUESTION:\nSecond?" in messages[3]["content"]
     assert messages[3]["content"].startswith("CONTEXT:")
+
+
+def test_rewrite_query_payload(monkeypatch):
+    mock_resp = Mock()
+    mock_resp.raise_for_status.return_value = None
+    mock_resp.json.return_value = {"message": {"content": "standalone query"}}
+
+    captured = {}
+
+    def _post(*a, **kw):
+        captured["json"] = kw["json"]
+        return mock_resp
+
+    monkeypatch.setattr("src.generator.requests.post", _post)
+
+    history = [
+        {"role": "user", "content": "First?"},
+        {"role": "assistant", "content": "Answer one", "sources": [{"source": "a.pdf", "page": 1}]},
+    ]
+    result = rewrite_query("what about it?", history)
+
+    assert result == "standalone query"
+    payload = captured["json"]
+    assert payload["stream"] is False
+    messages = payload["messages"]
+    assert messages[0]["role"] == "system"
+    assert messages[1] == {"role": "user", "content": "First?"}
+    assert messages[2] == {"role": "assistant", "content": "Answer one"}
+    assert messages[3] == {"role": "user", "content": "what about it?"}
+
+
+def test_rewrite_query_empty_falls_back(monkeypatch):
+    mock_resp = Mock()
+    mock_resp.raise_for_status.return_value = None
+    mock_resp.json.return_value = {"message": {"content": "   "}}
+    monkeypatch.setattr("src.generator.requests.post", lambda *a, **kw: mock_resp)
+
+    assert rewrite_query("what about it?", []) == "what about it?"
