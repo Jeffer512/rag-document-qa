@@ -3,7 +3,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from src.generator import _extract_sources, _format_context, generate_stream
+from src.generator import _extract_sources, _format_context, _prior_messages, generate_stream
 
 
 def test_format_context():
@@ -92,3 +92,49 @@ def test_generate_stream_mid_stream_error(monkeypatch):
     assert next(tokens) == "Partial "
     with pytest.raises(json.JSONDecodeError):
         next(tokens)
+
+
+def test_prior_messages_drops_failed_turn():
+    history = [
+        {"role": "user", "content": "Failed?"},
+        {"role": "assistant", "content": "partial", "error": "interrupted"},
+        {"role": "user", "content": "Good?"},
+        {"role": "assistant", "content": "Good answer"},
+    ]
+    assert _prior_messages(history) == [
+        {"role": "user", "content": "Good?"},
+        {"role": "assistant", "content": "Good answer"},
+    ]
+
+
+def test_generate_stream_payload(monkeypatch):
+    monkeypatch.setattr("src.generator.retrieve_context", _mock_retrieve)
+
+    mock_resp = Mock()
+    mock_resp.iter_lines.return_value = ['{"done":true,"message":{"content":""}}']
+    mock_resp.raise_for_status.return_value = None
+
+    captured = {}
+
+    def _post(*a, **kw):
+        captured["json"] = kw["json"]
+        return mock_resp
+
+    monkeypatch.setattr("src.generator.requests.post", _post)
+
+    history = [
+        {"role": "user", "content": "Failed?"},
+        {"role": "assistant", "content": "partial", "error": "interrupted"},
+        {"role": "user", "content": "First?"},
+        {"role": "assistant", "content": "Answer one", "sources": [{"source": "a.pdf", "page": 1}]},
+    ]
+    tokens, _sources = generate_stream("Second?", history)
+    list(tokens)
+
+    messages = captured["json"]["messages"]
+    assert messages[0]["role"] == "system"
+    assert messages[1] == {"role": "user", "content": "First?"}
+    assert messages[2] == {"role": "assistant", "content": "Answer one"}
+    assert messages[3]["role"] == "user"
+    assert "QUESTION:\nSecond?" in messages[3]["content"]
+    assert messages[3]["content"].startswith("CONTEXT:")

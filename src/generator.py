@@ -8,9 +8,9 @@ from src.vector_store import retrieve_context
 
 SYSTEM_PROMPT = (
     "You are a professional document assistant. Answer the question based "
-    "strictly on the provided context below. If the answer cannot be found "
-    'in the context, say "I do not have enough information in the uploaded '
-    'documents."'
+    "strictly on the provided context, using the conversation history "
+    "for continuity. If the answer cannot be found in the context, say "
+    '"I do not have enough information in the uploaded documents."'
 )
 
 
@@ -36,31 +36,20 @@ def _extract_sources(documents: list[dict]) -> list[dict]:
     return sources
 
 
-def generate_response(question: str) -> dict:
-    documents = retrieve_context(question)
-    context = _format_context(documents)
-    sources = _extract_sources(documents)
-
-    user_prompt = f"CONTEXT:\n{context}\n\nQUESTION:\n{question}"
-
-    res = requests.post(
-        f"{OLLAMA_BASE_URL}/api/chat",
-        json={
-            "model": LLM_MODEL,
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ],
-            "stream": False,
-            "options": {"temperature": 0.0},
-        },
-    )
-    res.raise_for_status()
-    answer = res.json()["message"]["content"]
-    return {"answer": answer, "sources": sources}
+def _prior_messages(history: list[dict]) -> list[dict]:
+    prior = []
+    for msg in history:
+        if msg["role"] == "assistant" and "error" in msg:
+            if prior and prior[-1]["role"] == "user":
+                prior.pop()
+            continue
+        prior.append({"role": msg["role"], "content": msg["content"]})
+    return prior
 
 
-def generate_stream(question: str) -> tuple[Iterator[str], list[dict]]:
+def generate_stream(
+    question: str, history: list[dict] | None = None
+) -> tuple[Iterator[str], list[dict]]:
     documents = retrieve_context(question)
     context = _format_context(documents)
     sources = _extract_sources(documents)
@@ -72,6 +61,7 @@ def generate_stream(question: str) -> tuple[Iterator[str], list[dict]]:
             "model": LLM_MODEL,
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
+                *(_prior_messages(history) if history else []),
                 {"role": "user", "content": user_prompt},
             ],
             "stream": True,

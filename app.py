@@ -163,9 +163,9 @@ def _request_regenerate(index: int):
     st.session_state.regenerate_index = index
 
 
-def _stream_answer(question: str) -> tuple[str, list[dict]]:
+def _stream_answer(question: str, history: list[dict] | None = None) -> tuple[str, list[dict]]:
     with st.spinner("Retrieving context..."):
-        token_stream, sources = generate_stream(question)
+        token_stream, sources = generate_stream(question, history)
 
     with st.chat_message("assistant"):
         collected: list[str] = []
@@ -191,8 +191,10 @@ def _stream_answer(question: str) -> tuple[str, list[dict]]:
 def _generate_answer(question: str, target_index: int | None):
     conversation = _active()
     messages = conversation["messages"]
+    start = (target_index - 1) if target_index is not None else (len(messages) - 1)
+    history = messages[:start]
     try:
-        answer, sources = _stream_answer(question)
+        answer, sources = _stream_answer(question, history)
     except PartialStreamError as e:
         st.error(f"Answer was interrupted: {e.cause}")
         content, srcs, error = e.partial, e.sources, f"Answer was interrupted: {e.cause}"
