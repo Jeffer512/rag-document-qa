@@ -7,6 +7,11 @@ from uuid import uuid4
 
 import streamlit as st
 
+try:
+    from streamlit.runtime.scriptrunner_utils.exceptions import StopException
+except ImportError:
+    StopException = BaseException
+    
 from src.config import DATA_DIR
 from src.conversation import (
     delete_conversation,
@@ -23,7 +28,7 @@ st.set_page_config(page_title="Document Q&A", page_icon="📄")
 
 
 class PartialStreamError(Exception):
-    def __init__(self, partial: str, sources: list[dict], cause: Exception):
+    def __init__(self, partial: str, sources: list[dict], cause: BaseException):
         super().__init__(f"Stream interrupted after partial output: {cause}")
         self.partial = partial
         self.sources = sources
@@ -169,10 +174,11 @@ def _request_regenerate(index: int):
 
 
 def _stream_answer(question: str, history: list[dict] | None, index: int) -> tuple[str, list[dict]]:
-    with st.spinner("Retrieving context..."):
-        token_stream, sources = generate_stream(question, history)
-
     with st.chat_message("assistant"):
+        placeholder = st.empty()
+        placeholder.caption("Thinking...")
+        token_stream, sources = generate_stream(question, history)
+        placeholder.empty()
         collected: list[str] = []
 
         def _tee() -> Iterator[str]:
@@ -182,29 +188,39 @@ def _stream_answer(question: str, history: list[dict] | None, index: int) -> tup
 
         try:
             answer = cast(str, st.write_stream(_tee()))
+            if sources:
+                with st.expander("Sources"):
+                    for s in sources:
+                        st.write(f"- Page {s['page']} of **{s['source']}**")
+            _render_actions(index)
         except Exception as e:
             if collected:
                 raise PartialStreamError("".join(collected), sources, e) from None
             raise
-        if sources:
-            with st.expander("Sources"):
-                for s in sources:
-                    st.write(f"- Page {s['page']} of **{s['source']}**")
-        _render_actions(index)
+        except StopException as e:
+            if collected:
+                raise PartialStreamError("".join(collected), sources, e) from None
+            raise
+
     return answer, sources
 
 
 def _generate_answer(question: str, target_index: int | None):
     conversation = _active()
     messages = conversation["messages"]
-    start = (target_index - 1) if target_index is not None else (len(messages) - 1)
+    start = (target_index - 1) if target_index is not None else (len(messages))
     history = messages[:start]
-    assistant_index = target_index if target_index is not None else len(messages)
+    assistant_index = target_index if target_index is not None else len(messages) + 1
+    conversation_id = st.session_state.active_conversation
     try:
         answer, sources = _stream_answer(question, history, assistant_index)
     except PartialStreamError as e:
-        st.error(f"Answer was interrupted: {e.cause}")
-        content, srcs, error = e.partial, e.sources, f"Answer was interrupted: {e.cause}"
+        if isinstance(e.cause, StopException):
+            content, srcs, error = e.partial, e.sources, "Answer was stopped"
+        else:
+            content, srcs, error = e.partial, e.sources, f"Answer was interrupted: {e.cause}"
+            st.error(f"Answer was interrupted: {e.cause}")
+        
     except Exception as e:  # noqa: BLE001
         st.error(f"An internal error has occurred: {e}")
         content, srcs, error = "", [], f"An internal error has occurred: {e}"
@@ -215,10 +231,11 @@ def _generate_answer(question: str, target_index: int | None):
     if error:
         assistant_msg["error"] = error
     if target_index is None:
+        messages.append({"content": question, "role": "user"})
         messages.append(assistant_msg)
     else:
         messages[target_index] = assistant_msg
-    save_conversation(st.session_state.active_conversation, conversation["title"], messages)
+    save_conversation(conversation_id, conversation["title"], messages)
 
 
 def _rollback(index: int):
@@ -275,7 +292,7 @@ def render_chat():
                 st.error(msg["error"])
             _render_actions(i)
 
-    if question := st.chat_input("Ask a question about your documents...", key="chat_input"):
+    if question := st.chat_input("Ask a question about your documents...", key="chat_input", submit_mode="stop"):
         st.session_state.regenerate_index = None
         if not messages:
             conversation["title"] = question.strip().splitlines()[0][:50] or "Untitled"
@@ -287,7 +304,6 @@ def render_chat():
         if not st.session_state.sources:
             st.warning("No documents indexed yet.")
             return
-        messages.append({"content": question, "role": "user"})
         _generate_answer(question, None)
     elif regenerate_index is not None:
         st.session_state.regenerate_index = None
