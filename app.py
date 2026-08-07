@@ -284,7 +284,7 @@ def render_chat():
         with st.chat_message(msg["role"]):
             if msg["content"]:
                 st.markdown(msg["content"])
-            if "sources" in msg:
+            if msg.get("sources", []):
                 with st.expander("Sources"):
                     for s in msg["sources"]:
                         st.write(f"- Page {s['page']} of **{s['source']}**")
