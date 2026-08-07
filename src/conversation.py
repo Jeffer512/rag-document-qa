@@ -20,6 +20,10 @@ def _load_raw(conversation_id: str) -> dict:
         return json.load(f)
 
 
+def conversation_exists(conversation_id: str) -> bool:
+    return _path(conversation_id).exists()
+
+
 def list_conversations() -> list[dict]:
     if not CONVERSATIONS_DIR.exists():
         return []

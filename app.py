@@ -14,6 +14,7 @@ except ImportError:
     
 from src.config import DATA_DIR
 from src.conversation import (
+    conversation_exists,
     delete_conversation,
     list_conversations,
     load_conversation,
@@ -252,6 +253,11 @@ def _rollback(index: int):
 def _fork(index: int):
     current = _active()
     _new_conversation()
+
+    if index == 0:
+        st.session_state.chat_input = current["messages"][index]["content"]
+        return
+    
     new = _active()
     if current["messages"][index]["role"] == "user":
         new["messages"] = current["messages"][:index]
@@ -294,7 +300,8 @@ def render_chat():
 
     if question := st.chat_input("Ask a question about your documents...", key="chat_input", submit_mode="stop"):
         st.session_state.regenerate_index = None
-        if not messages:
+        new = not conversation_exists(st.session_state.active_conversation)
+        if new:
             conversation["title"] = question.strip().splitlines()[0][:50] or "Untitled"
         user_index = len(messages)
         with st.chat_message("user"):
@@ -304,7 +311,11 @@ def render_chat():
         if not st.session_state.sources:
             st.warning("No documents indexed yet.")
             return
+        
         _generate_answer(question, None)
+
+        if new:
+            st.rerun()
     elif regenerate_index is not None:
         st.session_state.regenerate_index = None
         if 0 < regenerate_index < len(messages):
@@ -411,15 +422,23 @@ def render_sidebar():
             )
 
 
+def _header_title() -> str:
+    conversation_id = st.session_state.active_conversation
+    if not conversation_exists(conversation_id):
+        return "New conversation"
+    return _get_conversation(conversation_id)["title"]
+
+
 def main():
     title_container = st.empty()
     _init_session()
+    with title_container:
+        st.title(_header_title())
     render_sidebar()
     render_upload()
     render_chat()
-    conversation = _active()
-    with title_container:    
-        st.title("New conversation" if not conversation["messages"] else conversation["title"])
+    with title_container:
+        st.title(_header_title())
 
 
 if __name__ == "__main__":
