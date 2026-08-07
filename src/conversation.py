@@ -20,6 +20,24 @@ def _load_raw(conversation_id: str) -> dict:
         return json.load(f)
 
 
+def _load_meta(conversation_id: str) -> dict:
+    # Metadata keys are single lines with "messages" last 
+    # (json.dump indent=2 in save_conversation).
+    path = _path(conversation_id)
+    if not path.exists():
+        return {}
+    head = []
+    with path.open(encoding="utf-8") as f:
+        for line in f:
+            if line.lstrip().startswith('"messages"'):
+                break
+            head.append(line)
+    if not head:
+        return {}
+    text = "".join(head).rstrip().removesuffix(",")
+    return json.loads(text + "\n}")
+
+
 def conversation_exists(conversation_id: str) -> bool:
     return _path(conversation_id).exists()
 
@@ -29,7 +47,7 @@ def list_conversations() -> list[dict]:
         return []
     conversations = []
     for path in CONVERSATIONS_DIR.glob("*.json"):
-        data = _load_raw(path.stem)
+        data = _load_meta(path.stem)
         if data:
             conversations.append(
                 {

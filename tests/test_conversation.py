@@ -31,6 +31,20 @@ def test_list_conversations_sorted_newest_first(monkeypatch, tmp_path):
     assert [c["conversation_id"] for c in result] == [second, first]
 
 
+def test_list_conversations_reads_metadata_only(monkeypatch, tmp_path):
+    monkeypatch.setattr(conversation, "CONVERSATIONS_DIR", tmp_path)
+    cid = conversation.create_conversation("Meta only")
+    messages = [
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "hi there", "sources": [{"source": "a.pdf", "page": 1}]},
+    ]
+    conversation.save_conversation(cid, "Meta only", messages)
+    meta = conversation._load_meta(cid)
+    assert meta["title"] == "Meta only"
+    assert "messages" not in meta
+    assert conversation.list_conversations()[0]["title"] == "Meta only"
+
+
 def test_rename_conversation(monkeypatch, tmp_path):
     monkeypatch.setattr(conversation, "CONVERSATIONS_DIR", tmp_path)
     cid = conversation.create_conversation("Old")
