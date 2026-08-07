@@ -18,3 +18,7 @@ RETRIEVAL_K: int = 5
 CHROMA_DIR: Path = PROJECT_ROOT / "chroma_db/"
 DATA_DIR: Path = PROJECT_ROOT / "data/"
 CONVERSATIONS_DIR: Path = PROJECT_ROOT / "conversations/"
+
+# Opens PDFs in the OS default viewer from the sidebar (requires the app and
+# its files to run on the user's own machine); set to False to show downloads.
+OPEN_PDF_SYSTEM_VIEWER: bool = True

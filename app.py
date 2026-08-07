@@ -12,7 +12,7 @@ try:
 except ImportError:
     StopException = BaseException
     
-from src.config import DATA_DIR
+from src.config import DATA_DIR, OPEN_PDF_SYSTEM_VIEWER
 from src.conversation import (
     conversation_exists,
     delete_conversation,
@@ -23,6 +23,7 @@ from src.conversation import (
 )
 from src.generator import generate_stream
 from src.ingestion import load_and_chunk
+from src.pdf import open_pdf
 from src.vector_store import clear_index, get_indexed_sources, index_documents, remove_source
 
 st.set_page_config(page_title="Document Q&A", page_icon="📄")
@@ -128,6 +129,15 @@ def _remove_document(file_hash: str):
     info = st.session_state.sources[file_hash]
     _pdf_save_path(info["source"], file_hash).unlink(missing_ok=True)
     st.session_state.sources.pop(file_hash, None)
+
+
+def _open_pdf(file_hash: str):
+    info = st.session_state.sources[file_hash]
+    path = _pdf_save_path(info["source"], file_hash)
+    if not path.exists():
+        st.error(f"PDF not found on disk: {info['source']}")
+        return
+    open_pdf(path)
 
 
 def _remove_all_documents():
@@ -405,14 +415,41 @@ def render_sidebar():
                     col1, col2 = st.columns([3, 1])
                     col1.write(info["source"])
                     col2.write(f"{info['total_pages']}p")
-                    st.button(
-                        "Remove",
-                        icon=":material/delete:",
-                        key=f"rm_{file_hash}",
-                        on_click=_remove_document,
-                        args=(file_hash,),
-                        width="stretch",
-                    )
+                    if OPEN_PDF_SYSTEM_VIEWER:
+                        with st.container(horizontal=True):
+                            st.button(
+                                "Open",
+                                icon=":material/open_in_new:",
+                                key=f"open_pdf_{file_hash}",
+                                on_click=_open_pdf,
+                                args=(file_hash,),
+                                width="stretch",
+                            )
+                            st.button(
+                                "Remove",
+                                icon=":material/delete:",
+                                key=f"rm_{file_hash}",
+                                on_click=_remove_document,
+                                args=(file_hash,),
+                                width="stretch",
+                            )
+                    else:
+                        st.download_button(
+                            "Download",
+                            data=_pdf_save_path(info["source"], file_hash).read_bytes(),
+                            file_name=info["source"],
+                            mime="application/pdf",
+                            key=f"dl_{file_hash}",
+                            width="stretch",
+                        )
+                        st.button(
+                            "Remove",
+                            icon=":material/delete:",
+                            key=f"rm_{file_hash}",
+                            on_click=_remove_document,
+                            args=(file_hash,),
+                            width="stretch",
+                        )
 
             st.button(
                 "Remove all",
