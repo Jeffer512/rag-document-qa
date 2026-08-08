@@ -6,6 +6,7 @@ import pytest
 from src.generator import (
     _extract_sources,
     _format_context,
+    _history_augmented_query,
     _prior_messages,
     generate_stream,
     rewrite_query,
@@ -122,7 +123,8 @@ def test_generate_stream_payload(monkeypatch):
 
     monkeypatch.setattr("src.generator.retrieve_context", _capture_retrieve)
     monkeypatch.setattr(
-        "src.generator.rewrite_query", lambda question, history: "standalone query"
+        "src.generator.rewrite_query",
+        lambda question, history, history_window=0: "standalone query",
     )
 
     mock_resp = Mock()
@@ -192,3 +194,231 @@ def test_rewrite_query_empty_falls_back(monkeypatch):
     monkeypatch.setattr("src.generator.requests.post", lambda *a, **kw: mock_resp)
 
     assert rewrite_query("what about it?", []) == "what about it?"
+
+
+def test_generate_stream_forwards_k_and_temperature(monkeypatch):
+    retrieved = {}
+
+    def _capture_retrieve(question, k=None):
+        retrieved["k"] = k
+        return _SAMPLE_DOCS
+
+    monkeypatch.setattr("src.generator.retrieve_context", _capture_retrieve)
+    monkeypatch.setattr(
+        "src.generator.rewrite_query", lambda question, history, history_window=0: "query"
+    )
+
+    mock_resp = Mock()
+    mock_resp.iter_lines.return_value = ['{"done":true,"message":{"content":""}}']
+    mock_resp.raise_for_status.return_value = None
+
+    captured = {}
+
+    def _post(*a, **kw):
+        captured["json"] = kw["json"]
+        return mock_resp
+
+    monkeypatch.setattr("src.generator.requests.post", _post)
+
+    tokens, _sources = generate_stream("Q", temperature=0.8, top_k=3)
+    list(tokens)
+
+    assert retrieved["k"] == 3
+    assert captured["json"]["options"] == {"temperature": 0.8}
+
+
+def test_generate_stream_history_window_truncates_answer(monkeypatch):
+    monkeypatch.setattr("src.generator.retrieve_context", _mock_retrieve)
+    monkeypatch.setattr(
+        "src.generator.rewrite_query", lambda question, history, history_window=0: question
+    )
+
+    mock_resp = Mock()
+    mock_resp.iter_lines.return_value = ['{"done":true,"message":{"content":""}}']
+    mock_resp.raise_for_status.return_value = None
+
+    captured = {}
+
+    def _post(*a, **kw):
+        captured["json"] = kw["json"]
+        return mock_resp
+
+    monkeypatch.setattr("src.generator.requests.post", _post)
+
+    history = [
+        {"role": "user", "content": "One?"},
+        {"role": "assistant", "content": "One"},
+        {"role": "user", "content": "Two?"},
+        {"role": "assistant", "content": "Two"},
+    ]
+    tokens, _sources = generate_stream("Three?", history, history_window=2)
+    list(tokens)
+
+    prior = captured["json"]["messages"][1:-1]
+    assert prior == [
+        {"role": "user", "content": "Two?"},
+        {"role": "assistant", "content": "Two"},
+    ]
+
+
+def test_generate_stream_rewrite_history_window_forwards(monkeypatch):
+    seen = {}
+
+    def _fake_rewrite(question, history, history_window=0):
+        seen["window"] = history_window
+        return "query"
+
+    monkeypatch.setattr("src.generator.rewrite_query", _fake_rewrite)
+    monkeypatch.setattr("src.generator.retrieve_context", _mock_retrieve)
+
+    mock_resp = Mock()
+    mock_resp.iter_lines.return_value = ['{"done":true,"message":{"content":""}}']
+    mock_resp.raise_for_status.return_value = None
+    monkeypatch.setattr("src.generator.requests.post", lambda *a, **kw: mock_resp)
+
+    history = [
+        {"role": "user", "content": "One?"},
+        {"role": "assistant", "content": "One"},
+        {"role": "user", "content": "Two?"},
+        {"role": "assistant", "content": "Two"},
+    ]
+    tokens, _sources = generate_stream("Three?", history, rewrite_history_window=2)
+    list(tokens)
+
+    assert seen["window"] == 2
+
+
+def test_rewrite_query_history_window_truncates(monkeypatch):
+    mock_resp = Mock()
+    mock_resp.raise_for_status.return_value = None
+    mock_resp.json.return_value = {"message": {"content": "standalone query"}}
+
+    captured = {}
+
+    def _post(*a, **kw):
+        captured["json"] = kw["json"]
+        return mock_resp
+
+    monkeypatch.setattr("src.generator.requests.post", _post)
+
+    history = [
+        {"role": "user", "content": "One?"},
+        {"role": "assistant", "content": "One"},
+        {"role": "user", "content": "Two?"},
+        {"role": "assistant", "content": "Two"},
+    ]
+    rewrite_query("Three?", history, history_window=2)
+
+    messages = captured["json"]["messages"]
+    assert messages[0]["role"] == "system"
+    assert messages[1:3] == [
+        {"role": "user", "content": "Two?"},
+        {"role": "assistant", "content": "Two"},
+    ]
+    assert messages[3] == {"role": "user", "content": "Three?"}
+
+
+def test_history_augmented_query_skips_failed_turn():
+    history = [
+        {"role": "user", "content": "Bad?"},
+        {"role": "assistant", "content": "partial", "error": "interrupted"},
+        {"role": "user", "content": "Two?"},
+        {"role": "assistant", "content": "Two"},
+    ]
+    assert _history_augmented_query("Three?", history, n=4) == "Two?\nTwo\nThree?"
+
+
+def test_generate_stream_multi_turn_disabled_ignores_history(monkeypatch):
+    retrieved = []
+    rewrite_calls = []
+    monkeypatch.setattr(
+        "src.generator.retrieve_context",
+        lambda question, k=None: retrieved.append(question) or _SAMPLE_DOCS,
+    )
+    monkeypatch.setattr(
+        "src.generator.rewrite_query",
+        lambda question, history, history_window=0: rewrite_calls.append(question) or "rewritten",
+    )
+
+    mock_resp = Mock()
+    mock_resp.iter_lines.return_value = ['{"done":true,"message":{"content":""}}']
+    mock_resp.raise_for_status.return_value = None
+
+    captured = {}
+
+    def _post(*a, **kw):
+        captured["json"] = kw["json"]
+        return mock_resp
+
+    monkeypatch.setattr("src.generator.requests.post", _post)
+
+    history = [
+        {"role": "user", "content": "One?"},
+        {"role": "assistant", "content": "One"},
+    ]
+    tokens, _sources = generate_stream(
+        "Two?", history, multi_turn=False, rewrite_history_window=1
+    )
+    list(tokens)
+
+    assert retrieved == ["Two?"]
+    assert rewrite_calls == []
+    prior = captured["json"]["messages"][1:-1]
+    assert prior == []
+
+
+def test_generate_stream_rewrite_disabled_uses_raw_question(monkeypatch):
+    retrieved = []
+    rewrite_calls = []
+    monkeypatch.setattr(
+        "src.generator.retrieve_context",
+        lambda question, k=None: retrieved.append(question) or _SAMPLE_DOCS,
+    )
+    monkeypatch.setattr(
+        "src.generator.rewrite_query",
+        lambda question, history, history_window=0: rewrite_calls.append(question) or "rewritten",
+    )
+
+    mock_resp = Mock()
+    mock_resp.iter_lines.return_value = ['{"done":true,"message":{"content":""}}']
+    mock_resp.raise_for_status.return_value = None
+    monkeypatch.setattr("src.generator.requests.post", lambda *a, **kw: mock_resp)
+
+    history = [
+        {"role": "user", "content": "One?"},
+        {"role": "assistant", "content": "One"},
+    ]
+    tokens, _sources = generate_stream("Three?", history, rewrite_enabled=False)
+    list(tokens)
+
+    assert retrieved == ["Three?"]
+    assert rewrite_calls == []
+
+
+def test_generate_stream_rewrite_disabled_with_retrieval_messages(monkeypatch):
+    retrieved = []
+    monkeypatch.setattr(
+        "src.generator.retrieve_context",
+        lambda question, k=None: retrieved.append(question) or _SAMPLE_DOCS,
+    )
+    monkeypatch.setattr(
+        "src.generator.rewrite_query", lambda question, history, history_window=0: "rewritten"
+    )
+
+    mock_resp = Mock()
+    mock_resp.iter_lines.return_value = ['{"done":true,"message":{"content":""}}']
+    mock_resp.raise_for_status.return_value = None
+    monkeypatch.setattr("src.generator.requests.post", lambda *a, **kw: mock_resp)
+
+    history = [
+        {"role": "user", "content": "One?"},
+        {"role": "assistant", "content": "One"},
+        {"role": "user", "content": "Two?"},
+        {"role": "assistant", "content": "Two"},
+    ]
+    tokens, _sources = generate_stream(
+        "Three?", history, rewrite_enabled=False, retrieval_history_messages=3
+    )
+    list(tokens)
+
+    assert retrieved == ["Two?\nTwo\nThree?"]

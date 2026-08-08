@@ -24,6 +24,7 @@ from src.conversation import (
 from src.generator import generate_stream
 from src.ingestion import load_and_chunk
 from src.pdf import open_pdf
+from src.settings import DEFAULT_SETTINGS, load_settings, save_settings
 from src.vector_store import clear_index, get_indexed_sources, index_documents, remove_source
 
 st.set_page_config(page_title="Document Q&A", page_icon="📄")
@@ -47,6 +48,7 @@ def _init_session():
     st.session_state.setdefault("active_conversation", None)
     st.session_state.setdefault("rename_target", None)
     st.session_state.setdefault("regenerate_index", None)
+    st.session_state.setdefault("settings", load_settings())
     if not st.session_state.conversations:
         conversations = list_conversations()
         for conversation in conversations:
@@ -148,6 +150,31 @@ def _remove_all_documents():
     st.session_state.sources.clear()
 
 
+def _save_settings():
+    settings = {
+        key: st.session_state[key]
+        for key in (
+            "temperature",
+            "top_k",
+            "multi_turn",
+            "history_window",
+            "rewrite_enabled",
+            "rewrite_history_window",
+            "retrieval_history_messages",
+        )
+    }
+    st.session_state.settings = settings
+    save_settings(settings)
+
+
+def _reset_settings():
+    settings = dict(DEFAULT_SETTINGS)
+    for key, value in settings.items():
+        st.session_state[key] = value
+    st.session_state.settings = settings
+    save_settings(settings)
+
+
 def _index_pdf(raw_bytes: bytes, name: str, file_hash: str):
     with st.spinner(f"Indexing {name}..."):
         chunks = load_and_chunk(BytesIO(raw_bytes), name, file_hash)
@@ -188,7 +215,18 @@ def _stream_answer(question: str, history: list[dict] | None, index: int) -> tup
     with st.chat_message("assistant"):
         placeholder = st.empty()
         placeholder.caption("Thinking...")
-        token_stream, sources = generate_stream(question, history)
+        settings = st.session_state.settings
+        token_stream, sources = generate_stream(
+            question,
+            history,
+            temperature=settings["temperature"],
+            top_k=settings["top_k"],
+            multi_turn=settings["multi_turn"],
+            history_window=settings["history_window"],
+            rewrite_enabled=settings["rewrite_enabled"],
+            rewrite_history_window=settings["rewrite_history_window"],
+            retrieval_history_messages=settings["retrieval_history_messages"],
+        )
         placeholder.empty()
         collected: list[str] = []
 
@@ -457,6 +495,82 @@ def render_sidebar():
                 on_click=_remove_all_documents,
                 width="stretch",
             )
+
+    with st.sidebar.expander("Settings", icon=":material/settings:"):
+        settings = st.session_state.settings
+        st.slider(
+            "Temperature",
+            min_value=0.0,
+            max_value=1.0,
+            step=0.05,
+            value=settings["temperature"],
+            key="temperature",
+            on_change=_save_settings,
+        )
+        st.slider(
+            "Retrieved chunks (top K)",
+            min_value=1,
+            max_value=20,
+            step=1,
+            value=settings["top_k"],
+            key="top_k",
+            on_change=_save_settings,
+        )
+        multi_turn_on = st.toggle(
+            "Multi-turn conversation",
+            value=settings["multi_turn"],
+            key="multi_turn",
+            on_change=_save_settings,
+            help="Use conversation history in answers and retrieval. Off = answer the current question fully standalone.",
+        )
+        with st.expander("Advanced settings", icon=":material/tune:"):
+            st.number_input(
+                "History messages (answer)",
+                min_value=0,
+                max_value=50,
+                step=1,
+                value=settings["history_window"],
+                key="history_window",
+                on_change=_save_settings,
+                disabled=not multi_turn_on,
+                help="Last N messages sent for continuity. 0 = all.",
+            )
+            rewrite_on = st.toggle(
+                "Rewrite query",
+                value=settings["rewrite_enabled"],
+                key="rewrite_enabled",
+                on_change=_save_settings,
+                disabled=not multi_turn_on,
+                help="Rewrite the question into a standalone query using history before retrieval.",
+            )
+            st.number_input(
+                "History messages (query rewrite)",
+                min_value=0,
+                max_value=50,
+                step=1,
+                value=settings["rewrite_history_window"],
+                key="rewrite_history_window",
+                on_change=_save_settings,
+                disabled=(not multi_turn_on) or (not rewrite_on),
+                help="Last N messages used to rewrite the query. 0 = all.",
+            )
+            st.number_input(
+                "Messages used for retrieval",
+                min_value=1,
+                max_value=50,
+                step=1,
+                value=settings["retrieval_history_messages"],
+                key="retrieval_history_messages",
+                on_change=_save_settings,
+                disabled=(not multi_turn_on) or rewrite_on,
+                help="Last N messages (incl. the question) embedded for retrieval when rewrite is off. 1 = question only.",
+            )
+        st.button(
+            "Reset to defaults",
+            icon=":material/restart_alt:",
+            on_click=_reset_settings,
+            width="stretch",
+        )
 
 
 def _header_title() -> str:
